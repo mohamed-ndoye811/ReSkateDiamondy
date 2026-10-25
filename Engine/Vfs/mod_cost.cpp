@@ -1,4 +1,5 @@
 #include "mod_cost.h"
+#include "mod_records_file.h"
 #include "Engine/Core/Json/json.h"
 
 #include <algorithm>
@@ -6,7 +7,6 @@
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
-#include <system_error>
 
 namespace dingosdk::mods {
 namespace {
@@ -136,22 +136,7 @@ void write_costs(const fs::path& file, const Costs& costs) {
     auto root = Json::object();
     root["schema"] = costs_schema;
     root["mods"] = std::move(mods);
-    const auto text = root.dump(2);
-
-    // Written whole beside it first, so a launch that stops halfway leaves the last good file.
-    auto partial = file;
-    partial += ".partial";
-    {
-        std::ofstream output(partial, std::ios::binary | std::ios::trunc);
-        output.write(text.data(), static_cast<std::streamsize>(text.size()));
-        if (!output.flush()) throw std::runtime_error("The mod costs could not be written to " + partial.string());
-    }
-    std::error_code error;
-    fs::rename(partial, file, error);
-    if (error) {
-        fs::remove(partial, error);
-        throw std::runtime_error("The mod costs could not be saved as " + file.string());
-    }
+    detail::replace_file(file, root.dump(2), "mod costs");
 }
 
 std::string byte_text(std::uint64_t bytes) {
