@@ -76,6 +76,23 @@ std::string_view weight_name(Weight weight) noexcept {
     return "light";
 }
 
+Peak peak_video(const Costs& costs, const std::set<std::string, std::less<>>& is_map) {
+    Peak peak;
+    for (const auto& [name, cost] : costs) {
+        const auto bytes = video_bytes(cost);
+        if (!is_map.contains(name)) {
+            peak.everywhere += bytes;
+            continue;
+        }
+        peak.maps += bytes;
+        if (bytes > peak.heaviest_map || peak.map.empty()) {
+            peak.heaviest_map = bytes;
+            peak.map = name;
+        }
+    }
+    return peak;
+}
+
 std::vector<std::string> heaviest_first(const Costs& costs) {
     std::vector<const Costs::value_type*> order;
     order.reserve(costs.size());

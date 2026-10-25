@@ -14,6 +14,7 @@
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include <algorithm>
 #include <format>
+#include <set>
 #include <array>
 
 namespace dingosdk::console {
@@ -278,23 +279,30 @@ void register_multiplayer_commands(Commands &registry) {
         const auto& catalog = mods::catalog();
         const auto costs = mods::read_costs(catalog.root / mods::costs_file);
         mods::Costs enabled;
+        std::set<std::string, std::less<>> maps;
         std::size_t unmeasured{};
         for (const auto& mod : catalog.mods) {
             // A variant (<mod>#<variant>) is measured as the mod that holds it.
             const auto owner = mods::variant_owner(mod.name);
-            const auto found = costs.find(owner.empty() ? mod.name : owner);
+            const auto& name = owner.empty() ? mod.name : owner;
+            if (!mod.levels.empty()) maps.insert(name);
+            const auto found = costs.find(name);
             if (found == costs.end()) ++unmeasured;
             else enabled.emplace(found->first, found->second);
         }
-        std::uint64_t total{};
-        for (const auto& [name, measured] : enabled) total += mods::video_bytes(measured);
-        out(std::format("{} enabled mod(s) measured: {} of video memory at most, all loaded at once{}.", enabled.size(),
-            mods::byte_text(total), unmeasured ? std::format("; {} not measured yet (open the launcher's mod list)", unmeasured) : ""));
+        const auto peak = mods::peak_video(enabled, maps);
+        out(std::format("{} enabled mod(s) measured: up to {} of video memory at once: {} for what loads wherever you are "
+            "(cosmetics, decks, game data){}.{}", enabled.size(), mods::byte_text(peak.at_once()), mods::byte_text(peak.everywhere),
+            peak.map.empty() ? std::string()
+                : std::format(", and {} for the heaviest map ({}); all the maps come to {}, but only one is loaded at a time",
+                              mods::byte_text(peak.heaviest_map), peak.map, mods::byte_text(peak.maps)),
+            unmeasured ? std::format(" {} not measured yet (open the launcher's mod list).", unmeasured) : std::string()));
         const auto shown = values.empty() ? std::uint64_t{10} : std::max<std::uint64_t>(1, std::get<std::uint64_t>(values[0]));
         std::uint64_t at{};
         for (const auto& name : mods::heaviest_first(enabled)) {
             if (at++ >= shown) break;
-            out(std::format("{:>3}. {}: {}", at, name, mods::describe_cost(enabled.at(name))));
+            out(std::format("{:>3}. {}{}: {}", at, name, maps.contains(name) ? " (map: only while you are on it)" : "",
+                mods::describe_cost(enabled.at(name))));
         }
     };
     registry.add(std::move(cost));

@@ -726,11 +726,11 @@ void updates_bar(const Fonts& fonts, ModsPanel& panel, const thunderstore::Insta
 // at its right, which are laid out from the right edge in.
 struct Columns {
     float tick = S(12), grip = S(44), place = S(64), on = S(108), icon = S(162), name = S(202);
-    float more = S(28), status = S(156), type = S(92), update = S(84);
+    float more = S(28), status = S(156), type = S(92), vram = S(84), update = S(84);
 };
 // Where the right-hand columns of a row `width` wide start, from its left edge.
 struct RightColumns {
-    float more, status, type;
+    float more, status, type, vram;
 };
 RightColumns right_columns(float width) {
     const Columns c;
@@ -738,6 +738,7 @@ RightColumns right_columns(float width) {
     r.more = width - S(10) - c.more;
     r.status = r.more - S(12) - c.status;
     r.type = r.status - S(12) - c.type;
+    r.vram = r.type - S(12) - c.vram;
     return r;
 }
 
@@ -754,6 +755,7 @@ void table_header(const Fonts& fonts) {
     label(c.place, "#");
     label(c.on, "ON");
     label(c.icon, "MOD");
+    label(r.vram, "VRAM");
     label(r.type, "TYPE");
     label(r.status, "STATUS");
     ImGui::Dummy(ImVec2(width, fonts.caption->FontSize + S(6)));
@@ -869,6 +871,26 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
     if (more_button("##more", c.more)) menu = true;
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("More");
 
+    // What it can take of the card's own memory, once measured: brighter the heavier it is for this card.
+    {
+        const auto found = panel.costs.costs.find(mod.name);
+        const bool known = found != panel.costs.costs.end();
+        const auto bytes = known ? mods::video_bytes(found->second) : 0;
+        const auto weight = known ? mods::weight(found->second, panel.costs.card_memory) : mods::Weight::light;
+        const auto text = !known ? std::string(panel.costs.running ? "..." : "-") : bytes ? mods::byte_text(bytes) : std::string("none");
+        draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(start.x + r.vram, middle - fonts.body->FontSize * 0.5f),
+            weight == mods::Weight::heavy ? color::warning : weight == mods::Weight::medium ? color::text : color::muted, text.c_str());
+        if (ImGui::IsWindowHovered() &&
+            ImGui::IsMouseHoveringRect(ImVec2(start.x + r.vram, start.y), ImVec2(start.x + r.type, start.y + tall))) {
+            if (!known) ImGui::SetTooltip(panel.costs.running ? "Being measured" : "Not measured yet");
+            else
+                ImGui::SetTooltip("%s", ("Up to " + mods::describe_cost(found->second) + "." +
+                    (mod.levels.empty() ? std::string() : " A map: loaded only while you are on it.") +
+                    (weight == mods::Weight::light ? std::string()
+                        : std::string(" ") + (weight == mods::Weight::heavy ? "Heavy" : "Medium") + " for this card.")).c_str());
+        }
+    }
+
     const auto kind = kind_of(mod);
     draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(start.x + r.type, middle - fonts.body->FontSize * 0.5f),
         color::muted, kind.label.c_str());
@@ -912,7 +934,7 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
     // UPDATE button right after it, so the button sits with the change it makes. A name too long
     // for the row is cut short before the button rather than pushing it into the Type column.
     {
-        const float x = start.x + c.name, limit = start.x + r.type - S(12);
+        const float x = start.x + c.name, limit = start.x + r.vram - S(12);
         const auto to = update ? (mod.version.empty() ? std::string() : "v" + mod.version + " ") + "\xe2\x86\x92 v" +
                                      package->latest().number
                                : std::string();
@@ -1230,6 +1252,19 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
         for (const auto& [name, size] : panel.sizes) bytes += size;
         auto caption = std::format("{} {}  /  {} on", entries.size(), entries.size() == 1 ? "mod" : "mods", enabled);
         if (bytes) caption += "  /  " + size_text(bytes);
+        // What the enabled mods can take of video memory at once: a map only while on it.
+        if (panel.costs.ready) {
+            mods::Costs on;
+            std::set<std::string, std::less<>> maps;
+            for (const auto& entry : entries) {
+                if (!entry.enabled) continue;
+                if (!entry.mod.levels.empty()) maps.insert(entry.mod.name);
+                if (const auto found = panel.costs.costs.find(entry.mod.name); found != panel.costs.costs.end())
+                    on.emplace(found->first, found->second);
+            }
+            if (const auto peak = mods::peak_video(on, maps); peak.at_once())
+                caption += "  /  up to " + mods::byte_text(peak.at_once()) + " video memory at once";
+        }
         page_banner(fonts, "MY MODS", nullptr,
             "Your installed mods. They load top to bottom: where two change the same thing, the higher one wins. "
             "Drag a mod by its handle to move it. Changes apply the next time Skate starts.",

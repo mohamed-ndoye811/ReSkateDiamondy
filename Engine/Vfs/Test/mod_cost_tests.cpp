@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <set>
 #include <stdexcept>
 #include <string>
 
@@ -108,6 +109,28 @@ int main() try {
         const auto order = heaviest_first(costs);
         check(order == std::vector<std::string>{"b-map", "e-deck", "a-hat", "c-plugin", "d-plugin"},
             "ordered by video memory, then disk, then name");
+    }
+
+    // At once: everything that is not a map, and only the heaviest map.
+    {
+        Costs costs;
+        costs["LosSantos"].texture_bytes = 11000;
+        costs["Paradise"].texture_bytes = 5000;
+        costs["Paradise"].mesh_bytes = 1000;
+        costs["Hats"].texture_bytes = 300;
+        costs["Deck"].texture_bytes = 200;
+        costs["Plugin"].disk_bytes = 10;
+        const std::set<std::string, std::less<>> maps{"LosSantos", "Paradise", "Not-Installed-Map"};
+        const auto peak = peak_video(costs, maps);
+        check(peak.everywhere == 500, "cosmetics and the rest all count");
+        check(peak.maps == 17000, "every map, for the record");
+        check(peak.heaviest_map == 11000 && peak.map == "LosSantos", "the heaviest map is the one that counts");
+        check(peak.at_once() == 11500, "at once: the rest plus one map, not every map");
+        const auto none = peak_video(costs, {});
+        check(none.at_once() == 17500 && none.map.empty() && none.maps == 0, "with no maps, everything counts");
+        Costs empty_map;
+        empty_map["Tiny-Map"];
+        check(peak_video(empty_map, {"Tiny-Map"}).map == "Tiny-Map", "a map with nothing measured is still named");
     }
 
     // A cost holds only for the files it was measured on.

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -55,6 +56,20 @@ void add_texture(ModCost& cost, const frostbite::TextureHeader& texture) noexcep
 enum class Weight { light, medium, heavy };
 [[nodiscard]] Weight weight(const ModCost& cost, std::uint64_t card_memory) noexcept;
 [[nodiscard]] std::string_view weight_name(Weight weight) noexcept;   // "light", "medium", "heavy"
+
+// What a set of mods can take of video memory at once. A map's textures and meshes are only loaded
+// while the player is on it, and the game holds one map at a time; everything else (cosmetics,
+// decks, game data) can be loaded anywhere. So: every mod that is not a map, plus the heaviest map.
+// Still an upper bound: a cosmetic only loads while something wears it.
+struct Peak {
+    std::uint64_t everywhere{};   // the mods that are not maps, all of them
+    std::uint64_t maps{};         // every map, as if all were loaded (they never are)
+    std::uint64_t heaviest_map{};
+    std::string map;              // the heaviest map's mod, empty when there is none
+    [[nodiscard]] std::uint64_t at_once() const noexcept { return everywhere + heaviest_map; }
+};
+// `is_map`: whether the mod with that folder name brings maps (mod_list.h Mod::levels).
+[[nodiscard]] Peak peak_video(const Costs& costs, const std::set<std::string, std::less<>>& is_map);
 
 // The mods in `costs`, heaviest first: by video_bytes, then disk_bytes, then name.
 [[nodiscard]] std::vector<std::string> heaviest_first(const Costs& costs);
