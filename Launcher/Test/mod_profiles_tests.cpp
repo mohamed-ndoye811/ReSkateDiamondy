@@ -169,7 +169,11 @@ void codes() {
 
 } // namespace
 
+#ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
+#else
+int main(int argc, char** argv) {   // the Linux build of these tests (CMakeLists.txt, mod perf tests)
+#endif
     if (argc != 2) {
         std::cerr << "Pass a scratch folder\n";
         return 2;

@@ -436,6 +436,27 @@ if(DINGOSDK_BUILD_MOD_PERF_TESTS)
     target_include_directories(dingosdk_mod_usage_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_link_libraries(dingosdk_mod_usage_tests PRIVATE dingosdk_mod_records)
     add_test(NAME mod_usage COMMAND dingosdk_mod_usage_tests)
+    # The cleanup: what a plan switches off and keeps, and the snapshot taken before it changes anything.
+    add_executable(dingosdk_mod_cleanup_tests Launcher/Test/mod_cleanup_tests.cpp Launcher/mod_cleanup.cpp
+        Launcher/mod_profiles.cpp)
+    target_include_directories(dingosdk_mod_cleanup_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_mod_cleanup_tests PRIVATE dingosdk_mod_records dingosdk_json dingosdk_miniz)
+    if(WIN32)
+        target_link_libraries(dingosdk_mod_cleanup_tests PRIVATE dingosdk_mod_list)
+    else()
+        target_sources(dingosdk_mod_cleanup_tests PRIVATE Engine/Vfs/mod_list.cpp)
+    endif()
+    add_test(NAME mod_cleanup COMMAND dingosdk_mod_cleanup_tests)
+    if(NOT WIN32)
+        # Mod profiles (Launcher/mod_profiles.h), which the cleanup builds on, run on Linux too; on
+        # Windows they are in the launcher's tests (cmake/Apps.cmake). The Linux build has no mod
+        # list library, so its source comes along, as for the plugin tests.
+        add_executable(dingosdk_mod_profiles_tests Launcher/Test/mod_profiles_tests.cpp Launcher/mod_profiles.cpp
+            Engine/Vfs/mod_list.cpp)
+        target_link_libraries(dingosdk_mod_profiles_tests PRIVATE dingosdk_json dingosdk_miniz)
+        target_include_directories(dingosdk_mod_profiles_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+        add_test(NAME launcher_mod_profiles COMMAND dingosdk_mod_profiles_tests "${CMAKE_CURRENT_BINARY_DIR}/mod-profiles-fixture")
+    endif()
 endif()
 option(DINGOSDK_BUILD_XRAY_TESTS "Build the skater x-ray's skeleton tests" OFF)
 if(DINGOSDK_BUILD_XRAY_TESTS)
