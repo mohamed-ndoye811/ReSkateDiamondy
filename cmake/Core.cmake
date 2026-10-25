@@ -112,7 +112,7 @@ if(WIN32)
         Engine/Vfs/mod_store_copies.cpp
         Engine/Vfs/mod_item_sources.cpp
         Engine/Vfs/builtin_packs.cpp)
-    target_link_libraries(dingosdk_mods PUBLIC dingosdk_json dingosdk_mod_list PRIVATE dingosdk_game_archives dingosdk_native_db dingosdk_frostbite dingosdk_content_cache dingosdk_miniz dingosdk_zstd shell32 bcrypt)
+    target_link_libraries(dingosdk_mods PUBLIC dingosdk_json dingosdk_mod_list dingosdk_mod_cost PRIVATE dingosdk_game_archives dingosdk_native_db dingosdk_frostbite dingosdk_content_cache dingosdk_miniz dingosdk_zstd shell32 bcrypt)
 
     add_library(dingosdk_custom_scripts STATIC Engine/Scripting/custom_scripts.cpp)
     target_link_libraries(dingosdk_custom_scripts PUBLIC dingosdk_json PRIVATE dingosdk_initfs)
@@ -131,6 +131,10 @@ if(WIN32)
     target_link_libraries(dingosdk_content_cache_install PUBLIC dingosdk_content_cache
         PRIVATE dingosdk_launcher_support dingosdk_https dingosdk_miniz)
 endif()
+# What each mod costs the game (Engine/Vfs/mod_cost.h): the numbers and their file, apart from the
+# merge that measures them, so the launcher reads them and they build and are tested on Linux too.
+add_library(dingosdk_mod_cost STATIC Engine/Vfs/mod_cost.cpp)
+target_link_libraries(dingosdk_mod_cost PUBLIC dingosdk_json)
 # World layers read from the installed level data, cached per game build.
 add_library(dingosdk_world_layer_scan STATIC Engine/Vfs/world_layer_scan.cpp)
 target_link_libraries(dingosdk_world_layer_scan PUBLIC dingosdk_json PRIVATE dingosdk_game_archives dingosdk_content_cache)
