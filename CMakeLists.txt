@@ -447,6 +447,13 @@ if(DINGOSDK_BUILD_MOD_PERF_TESTS)
         target_sources(dingosdk_mod_cleanup_tests PRIVATE Engine/Vfs/mod_list.cpp)
     endif()
     add_test(NAME mod_cleanup COMMAND dingosdk_mod_cleanup_tests)
+    if(WIN32)
+        # Bringing the costs file up to date: sizes, mods gone, item counts, measured only once.
+        add_executable(dingosdk_mod_cost_scan_tests Engine/Vfs/Test/mod_cost_scan_tests.cpp)
+        target_include_directories(dingosdk_mod_cost_scan_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+        target_link_libraries(dingosdk_mod_cost_scan_tests PRIVATE dingosdk_mods)
+        add_test(NAME mod_cost_scan COMMAND dingosdk_mod_cost_scan_tests)
+    endif()
     if(NOT WIN32)
         # Mod profiles (Launcher/mod_profiles.h), which the cleanup builds on, run on Linux too; on
         # Windows they are in the launcher's tests (cmake/Apps.cmake). The Linux build has no mod

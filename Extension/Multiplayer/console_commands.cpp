@@ -9,8 +9,11 @@
 #include "Extension/Throwdowns/throwdown_relay.h"
 #include "Extension/UI/NativeMenu/native_menu_dump.h"
 #include "Extension/Assets/live_mods.h"
+#include "Engine/Vfs/mod_catalog.h"
+#include "Engine/Vfs/mod_cost.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include <algorithm>
+#include <format>
 #include <array>
 
 namespace dingosdk::console {
@@ -267,5 +270,33 @@ void register_multiplayer_commands(Commands &registry) {
         out(live_mods::apply(reload));
     };
     registry.add(std::move(apply));
+    // What the enabled mods cost, heaviest first, as the launcher last measured it (Engine/Vfs/mod_cost.h).
+    auto count = argument("count", Type::unsigned_integer, true);
+    auto cost = action("mods cost", "The enabled mods that can take the most video memory, heaviest first "
+                       "(10 unless a count is given), as the launcher's mod list measured them", Group::console, {std::move(count)});
+    cost.run = [](const Model &, const Values &values, const Output &out) {
+        const auto& catalog = mods::catalog();
+        const auto costs = mods::read_costs(catalog.root / mods::costs_file);
+        mods::Costs enabled;
+        std::size_t unmeasured{};
+        for (const auto& mod : catalog.mods) {
+            // A variant (<mod>#<variant>) is measured as the mod that holds it.
+            const auto owner = mods::variant_owner(mod.name);
+            const auto found = costs.find(owner.empty() ? mod.name : owner);
+            if (found == costs.end()) ++unmeasured;
+            else enabled.emplace(found->first, found->second);
+        }
+        std::uint64_t total{};
+        for (const auto& [name, measured] : enabled) total += mods::video_bytes(measured);
+        out(std::format("{} enabled mod(s) measured: {} of video memory at most, all loaded at once{}.", enabled.size(),
+            mods::byte_text(total), unmeasured ? std::format("; {} not measured yet (open the launcher's mod list)", unmeasured) : ""));
+        const auto shown = values.empty() ? std::uint64_t{10} : std::max<std::uint64_t>(1, std::get<std::uint64_t>(values[0]));
+        std::uint64_t at{};
+        for (const auto& name : mods::heaviest_first(enabled)) {
+            if (at++ >= shown) break;
+            out(std::format("{:>3}. {}: {}", at, name, mods::describe_cost(enabled.at(name))));
+        }
+    };
+    registry.add(std::move(cost));
 }
 } // namespace dingosdk::console

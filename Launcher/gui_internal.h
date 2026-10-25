@@ -9,6 +9,7 @@
 #include "thunderstore.h"
 
 #include "Engine/Vfs/mod_conflicts.h"
+#include "Engine/Vfs/mod_cost.h"
 #include "Engine/Vfs/mod_list.h"
 #include "Extension/UI/skate_theme.h"
 
@@ -614,6 +615,22 @@ struct ModsPanel {
             std::vector<std::string> order;
         } pending;                          // under mutex
     } conflicts;
+    // MY MODS: what each installed mod costs (mods::refresh_costs), measured off the UI thread
+    // after each read of the folder, for the mods whose files changed since they were measured.
+    // The worker hands its result over in `pending` (under `mutex`); `costs` is the UI thread's.
+    // `stop` ends a measurement early: before mods are installed or removed (it reads their files).
+    struct CostCheck {
+        std::thread worker;
+        std::atomic<bool> running{}, stop{};
+        bool due{};                          // a measurement is asked for
+        bool ready{};                        // `costs` holds a result
+        mods::Costs costs;
+        std::uint64_t card_memory{};         // the largest card's own memory, for how heavy a mod is; 0 not known
+        struct Result {
+            bool ready{};
+            mods::Costs costs;
+        } pending;                           // under mutex
+    } costs;
     std::string message;
     bool message_error{};
     std::vector<std::string> confirm_remove;   // folders awaiting "Uninstall" confirmation
@@ -663,6 +680,8 @@ struct ModsPanel {
         if (worker.joinable()) worker.join();
         if (profile_worker.joinable()) profile_worker.join();
         if (conflicts.worker.joinable()) conflicts.worker.join();
+        costs.stop = true;
+        if (costs.worker.joinable()) costs.worker.join();
     }
 };
 
@@ -675,7 +694,7 @@ void refresh_mods(Launcher& launcher, ModsPanel& panel);
 void prepare_mods(ModsPanel& panel, const launcher_app::Session& session);
 // Waits (at most ten seconds) for a conflict check under way to finish: it may be reading the mod
 // files an install or uninstall is about to replace. Off the UI thread where it can be.
-void wait_for_conflict_check(const ModsPanel& panel);
+void wait_for_conflict_check(ModsPanel& panel);
 void start_install(ModsPanel& panel, const fs::path& source, bool replace);
 // The Windows file (or folder) picker; empty when cancelled. A file picker shows
 // `filter_pattern` ("*.zip") under `filter_name`.

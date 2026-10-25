@@ -4,14 +4,17 @@
 
 #include "mod_manager.h"
 #include "Engine/Vfs/builtin_packs.h"
+#include "Engine/Vfs/mod_cost_scan.h"
 
 #include "Engine/Core/Log/logging.h"
 
 #include <cstring>
+#include <dxgi.h>
 #include <shobjidl.h>
 #include <wrl/client.h>
 
 #include <cctype>
+#include <chrono>
 #include <format>
 #include <fstream>
 #include <memory>
@@ -78,6 +81,70 @@ void pump_conflict_check(ModsPanel& panel) {
                 panel.conflicts.pending = {true, asked, std::move(rows), std::move(names)};
             }
             panel.conflicts.running = false;
+        });
+    } catch (const std::system_error&) {
+        check.running = false;
+    }
+}
+
+// The own memory of the card with the most of it: the one the game draws on (a laptop's integrated
+// GPU has little or none). Through the dxgi.dll the window's renderer has loaded; 0 when not known.
+std::uint64_t largest_card_memory() {
+    const auto module = GetModuleHandleW(L"dxgi.dll");
+    using Create = HRESULT(WINAPI*)(REFIID, void**);
+    const auto create = module ? reinterpret_cast<Create>(GetProcAddress(module, "CreateDXGIFactory1")) : nullptr;
+    IDXGIFactory1* factory{};
+    if (!create || FAILED(create(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory))) || !factory) return 0;
+    std::uint64_t memory{};
+    IDXGIAdapter1* adapter{};
+    for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+        DXGI_ADAPTER_DESC1 desc{};
+        if (SUCCEEDED(adapter->GetDesc1(&desc)) && !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE))
+            memory = std::max<std::uint64_t>(memory, desc.DedicatedVideoMemory);
+        adapter->Release();
+    }
+    factory->Release();
+    return memory;
+}
+
+// Takes in finished cost measurements, and starts the one asked for when none runs. Every installed
+// mod is measured, enabled or not, so a disabled one shows what it would cost to turn on.
+void pump_cost_check(ModsPanel& panel) {
+    auto& check = panel.costs;
+    {
+        std::lock_guard lock(panel.mutex);
+        if (check.pending.ready) {
+            check.pending.ready = false;
+            check.costs = std::move(check.pending.costs);
+            check.ready = true;
+        }
+    }
+    if (!check.running && check.worker.joinable()) check.worker.join();
+    // (Not while mods are being installed or updated: it reads the files they replace.)
+    if (!check.due || check.running || panel.root.empty() || panel.installing) return;
+    check.due = false;
+    if (!check.card_memory) check.card_memory = largest_card_memory();
+    auto snapshot = std::make_shared<std::vector<mods::Mod>>();
+    for (const auto& entry : panel.list.entries) snapshot->push_back(entry.mod);
+    check.stop = false;
+    check.running = true;
+    try {
+        check.worker = std::thread([&panel, snapshot] {
+            std::vector<const mods::Mod*> order;
+            for (const auto& mod : *snapshot) order.push_back(&mod);
+            const auto started = std::chrono::steady_clock::now();
+            // A quarter of the cores, under normal priority: it is the conflict check's turn first.
+            auto costs = mods::refresh_costs(panel.root.parent_path(), order, std::max(1U, std::thread::hardware_concurrency() / 4),
+                                             true, &panel.costs.stop);
+            const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+            if (seconds >= 1)
+                logging::write(logging::Level::info, logging::Channel::launcher,
+                    std::format("Mod costs: {} mod(s) measured in {:.1f} s", costs.size(), seconds));
+            {
+                std::lock_guard lock(panel.mutex);
+                panel.costs.pending = {true, std::move(costs)};
+            }
+            panel.costs.running = false;
         });
     } catch (const std::system_error&) {
         check.running = false;
@@ -154,6 +221,13 @@ std::string summary(const ModsPanel& panel, const mods::Mod& mod) {
     if (!mod.version.empty()) parts.push_back("v" + mod.version);
     if (const auto size = panel.sizes.find(mod.name); size != panel.sizes.end() && size->second)
         parts.push_back(size_text(size->second));
+    // What it can take of the card's own memory once measured (mods::refresh_costs), with how heavy
+    // that is for this card when it is a good part of it.
+    if (const auto cost = panel.costs.costs.find(mod.name); cost != panel.costs.costs.end() && mods::video_bytes(cost->second)) {
+        const auto weight = mods::weight(cost->second, panel.costs.card_memory);
+        parts.push_back(mods::byte_text(mods::video_bytes(cost->second)) + " video memory" +
+                        (weight == mods::Weight::light ? "" : std::string(" (") + std::string(mods::weight_name(weight)) + ")"));
+    }
     if (!mod.author.empty()) parts.push_back("by " + mod.author);
     if (!mod.levels.empty()) parts.push_back(mod.levels.size() == 1 ? "1 map" : std::to_string(mod.levels.size()) + " maps");
     else if (mod.provides_layout) parts.push_back("game data");
@@ -255,9 +329,9 @@ bool rail(const Fonts& fonts, ModsPanel& panel, HWND window, float width,
 
 // ---------------------------------------------------------------- MY MODS
 
-constexpr std::array<const char*, 8> filter_names{"All mods", "Enabled", "Disabled", "Maps", "Game data", "Updates",
-                                                  "Problems", "Conflicts"};
-constexpr std::array<const char*, 3> order_names{"Load order", "Name", "Largest first"};
+constexpr std::array<const char*, 9> filter_names{"All mods", "Enabled", "Disabled", "Maps", "Game data", "Updates",
+                                                  "Problems", "Conflicts", "Heavy"};
+constexpr std::array<const char*, 4> order_names{"Load order", "Name", "Largest first", "Heaviest first"};
 // What a row dragged by its handle carries: its place in the load order.
 constexpr const char* dragged_row = "RESKATE_MOD_ROW";
 
@@ -418,6 +492,17 @@ std::vector<std::string> categories_of(const ModsPanel& panel, const mods::Mod& 
     return found->second;
 }
 
+// What a mod can take of the card's own memory, as last measured (0 when not measured), and how
+// heavy that is for this card (light when not measured).
+std::uint64_t video(const ModsPanel& panel, const std::string& name) {
+    const auto found = panel.costs.costs.find(name);
+    return found == panel.costs.costs.end() ? 0 : mods::video_bytes(found->second);
+}
+mods::Weight video_weight(const ModsPanel& panel, const std::string& name) {
+    const auto found = panel.costs.costs.find(name);
+    return found == panel.costs.costs.end() ? mods::Weight::light : mods::weight(found->second, panel.costs.card_memory);
+}
+
 std::vector<int> visible_mods(const ModsPanel& panel, const thunderstore::Installed& installed, const thunderstore::CategoryFilter& categories) {
     const auto& entries = panel.list.entries;
     const auto query = folded(panel.search.data());
@@ -434,6 +519,7 @@ std::vector<int> visible_mods(const ModsPanel& panel, const thunderstore::Instal
         case 5: keep = update_waiting(panel, installed, mod.name); break;
         case 6: keep = !mod.outdated.empty() || broken(panel, mod.name); break;
         case 7: keep = mod.outdated.empty() && (!conflict_winner(panel, mod.name).empty() || conflict_beats(panel, mod.name)); break;
+        case 8: keep = video_weight(panel, mod.name) == mods::Weight::heavy; break;
         default: break;
         }
         if (keep && !categories.empty()) keep = thunderstore::shown_by(categories_of(panel, mod), categories);
@@ -454,6 +540,10 @@ std::vector<int> visible_mods(const ModsPanel& panel, const thunderstore::Instal
         });
     else if (panel.order == 2)
         std::stable_sort(view.begin(), view.end(), [&](int a, int b) { return size(a) > size(b); });
+    else if (panel.order == 3)
+        std::stable_sort(view.begin(), view.end(), [&](int a, int b) {
+            return video(panel, entries[static_cast<std::size_t>(a)].mod.name) > video(panel, entries[static_cast<std::size_t>(b)].mod.name);
+        });
     return view;
 }
 
@@ -1647,8 +1737,11 @@ fs::path pick_path(HWND owner, bool folder, const wchar_t* title, const wchar_t*
     return result;
 }
 
-void wait_for_conflict_check(const ModsPanel& panel) {
-    for (int waited = 0; panel.conflicts.running && waited < 500; ++waited) Sleep(20);
+void wait_for_conflict_check(ModsPanel& panel) {
+    // The cost measurement reads mods' files too: it stops where it is, keeping what it measured,
+    // and is asked again by the read of the folder that follows the change.
+    panel.costs.stop = true;
+    for (int waited = 0; (panel.conflicts.running || panel.costs.running) && waited < 500; ++waited) Sleep(20);
 }
 
 void prepare_mods(ModsPanel& panel, const launcher_app::Session& session) {
@@ -1657,8 +1750,10 @@ void prepare_mods(ModsPanel& panel, const launcher_app::Session& session) {
         panel.list = mods::scan_mods(panel.root.parent_path());
         want_conflict_check(panel, 0);
         read_conflict_choices(panel);
+        panel.costs.due = true;
     }
     pump_conflict_check(panel);
+    pump_cost_check(panel);
 }
 
 void refresh_mods(Launcher& launcher, ModsPanel& panel) {
@@ -1672,6 +1767,7 @@ void scan(ModsPanel& panel, const launcher_app::Session& session) {
     panel.list = mods::scan_mods(panel.root.parent_path());
     want_conflict_check(panel, 0);
     read_conflict_choices(panel);
+    panel.costs.due = true;
     panel.sizes.clear();
     for (const auto& entry : panel.list.entries) panel.sizes[entry.mod.name] = folder_size(entry.mod.directory);
     panel.scanned = true;
@@ -1876,6 +1972,7 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
     if (!panel.scanned) scan(panel, session);
     collect_install(panel, session);
     pump_conflict_check(panel);
+    pump_cost_check(panel);
     settle_profile(panel);
     refresh_listing(panel, ImGui::GetTime());
     // A page, not a panel: the mod list and the Thunderstore browser both want
