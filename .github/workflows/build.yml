@@ -39,6 +39,11 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
+      # The configure step links ReSkate.dll against an import library cargo fetches with the Spotify
+      # device's crates (cmake/Runtime.cmake); a fresh runner has none until they are fetched.
+      - name: Rust crates
+        working-directory: SpotifyHelper
+        run: cargo fetch --locked
       - name: Configure
         run: >
           cmake --preset vs2022-x64
