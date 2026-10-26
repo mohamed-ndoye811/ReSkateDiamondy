@@ -653,6 +653,13 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
                        : !dropped.empty() ? std::format("{} mods did not load", dropped.size())
                        : installed ? std::format("{} of {} enabled", enabled_mods, installed)
                        : std::string("Browse and install from Thunderstore");
+        // More video memory at once than the card has (gui_mods.cpp video_memory_bar): said before PLAY.
+        if (ui.mods_mark.empty() && mods_panel.costs.card_memory)
+            if (const auto peak = enabled_peak(mods_panel); peak.at_once() > mods_panel.costs.card_memory) {
+                ui.mods_mark = "HEAVY";
+                ui.mods_detail = "Up to " + mods::byte_text(peak.at_once()) + " of video memory on a " +
+                                 mods::byte_text(mods_panel.costs.card_memory) + " card";
+            }
         ui.mods_checked = time;
     }
     if (mods_tile(draw, fonts, mods_position, mods_size, !modal, ui.mods_detail, ui.mods_mark, ui.mods_mark_bad)) {

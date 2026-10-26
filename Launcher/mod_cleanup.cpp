@@ -56,19 +56,30 @@ std::string with_suffix(std::string_view base, std::string_view suffix) {
 }
 } // namespace
 
+bool watched_mod(const mods::Mod& mod, const mods::ModCost* cost) noexcept {
+    if (mod.provides_music || mod.provides_objects) return false;
+    return mod.provides_levels || mod.provides_plugin || (cost && cost->items);
+}
+
 Plan unused_plan(const mods::ModList& list, const mods::Usage& usage, int days, std::int64_t now,
-                 const Dependencies& dependencies) {
+                 const Dependencies& dependencies, const Names& watched, const Names& keep) {
     Plan plan;
     plan.switch_off = mods::unused_for(usage, enabled_mods(list), days, now);
+    std::erase_if(plan.switch_off, [&](const std::string& name) {
+        if (keep.contains(name)) plan.kept.emplace(name, "you keep it");
+        else if (!watched.contains(name)) plan.kept.emplace(name, "its use cannot be seen");
+        else return false;
+        return true;
+    });
     keep_needed(plan, list, dependencies);
     return plan;
 }
 
-Plan light_plan(const mods::ModList& list, const mods::Costs& costs, std::uint64_t budget,
-                const Dependencies& dependencies) {
+Plan light_plan(const mods::ModList& list, const mods::Costs& costs, const Names& maps, std::uint64_t budget,
+                const Dependencies& dependencies, const Names& keep) {
     Plan plan;
     const auto enabled = enabled_mods(list);
-    std::uint64_t total{};
+    mods::Costs staying;
     std::vector<std::pair<std::uint64_t, std::size_t>> heavy;   // video bytes, place in the load order
     for (std::size_t at = 0; at < enabled.size(); ++at) {
         const auto found = costs.find(enabled[at]);
@@ -76,17 +87,21 @@ Plan light_plan(const mods::ModList& list, const mods::Costs& costs, std::uint64
             plan.kept.emplace(enabled[at], "not measured yet");
             continue;
         }
+        staying.emplace(enabled[at], found->second);
         const auto bytes = mods::video_bytes(found->second);
-        total += bytes;
-        if (bytes) heavy.emplace_back(bytes, at);
+        if (bytes && keep.contains(enabled[at])) plan.kept.emplace(enabled[at], "you keep it");
+        else if (bytes) heavy.emplace_back(bytes, at);
     }
     // Heaviest first; of two as heavy, the one lower in the load order goes first.
     std::ranges::sort(heavy, [](const auto& a, const auto& b) { return a.first != b.first ? a.first > b.first : a.second > b.second; });
     std::set<std::size_t> going;
     for (const auto& [bytes, at] : heavy) {
-        if (total <= budget) break;
+        const auto peak = mods::peak_video(staying, maps);
+        if (peak.at_once() <= budget) break;
+        // A map that is not the heaviest left gives nothing back: only one map is loaded at a time.
+        if (maps.contains(enabled[at]) && peak.map != enabled[at]) continue;
         going.insert(at);
-        total -= bytes;
+        staying.erase(enabled[at]);
     }
     for (const auto at : going) plan.switch_off.push_back(enabled[at]);   // std::set: load order
     keep_needed(plan, list, dependencies);

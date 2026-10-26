@@ -4,6 +4,7 @@
 #include "game_settings.h"
 #include "launch.h"
 #include "text_encoding.h"
+#include "mod_cleanup.h"
 #include "mod_profiles.h"
 #include "start_maps.h"
 #include "thunderstore.h"
@@ -11,6 +12,7 @@
 #include "Engine/Vfs/mod_conflicts.h"
 #include "Engine/Vfs/mod_cost.h"
 #include "Engine/Vfs/mod_list.h"
+#include "Engine/Vfs/mod_usage.h"
 #include "Extension/UI/skate_theme.h"
 
 #include <Windows.h>
@@ -631,6 +633,16 @@ struct ModsPanel {
             mods::Costs costs;
         } pending;                           // under mutex
     } costs;
+    // MY MODS: when each mod was last of use in game (mods::read_usage), and what each one's
+    // manifest.json needs (launcher_mods::listed_dependencies), read with the folder. The CLEAN UP
+    // popup: asked to open (on its light page with `clean_light`), the days it offers the mods
+    // unused for, and the mods the player ticked to keep.
+    mods::Usage usage;
+    launcher_cleanup::Dependencies dependencies;
+    bool cleaning{}, clean_light{};
+    int clean_days{30};
+    float clean_budget_gb{};   // the light page's budget; 0 until it opens (then nine tenths of the card)
+    launcher_cleanup::Names clean_keep;
     std::string message;
     bool message_error{};
     std::vector<std::string> confirm_remove;   // folders awaiting "Uninstall" confirmation
@@ -695,6 +707,9 @@ void prepare_mods(ModsPanel& panel, const launcher_app::Session& session);
 // Waits (at most ten seconds) for a conflict check under way to finish: it may be reading the mod
 // files an install or uninstall is about to replace. Off the UI thread where it can be.
 void wait_for_conflict_check(ModsPanel& panel);
+// What the enabled mods can take of video memory at once (mods::peak_video), as last measured;
+// nothing until they are.
+mods::Peak enabled_peak(const ModsPanel& panel);
 void start_install(ModsPanel& panel, const fs::path& source, bool replace);
 // The Windows file (or folder) picker; empty when cancelled. A file picker shows
 // `filter_pattern` ("*.zip") under `filter_name`.

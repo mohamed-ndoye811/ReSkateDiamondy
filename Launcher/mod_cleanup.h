@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -34,17 +35,26 @@ struct Plan {
     [[nodiscard]] bool empty() const noexcept { return switch_off.empty(); }
 };
 
-// The enabled mods of no use for `days` days at `now` (mod_usage.h unused_for). A mod an enabled
-// mod that stays needs stays too.
+// Whether the game can see the mod used (Extension/Assets/mod_usage_tracker.h): it brings maps, a
+// plugin or cosmetic items (`cost`'s items, null when not measured), and no songs or objects, whose
+// use is not told apart by mod. A mod that only changes the game's data is never seen used either.
+[[nodiscard]] bool watched_mod(const mods::Mod& mod, const mods::ModCost* cost) noexcept;
+using Names = std::set<std::string, std::less<>>;
+
+// The enabled mods of no use for `days` days at `now` (mod_usage.h unused_for). Only those in
+// `watched` (watched_mod) can go: one whose use cannot be seen stays, as do the mods the player
+// keeps (`keep`) and a mod an enabled mod that stays needs.
 [[nodiscard]] Plan unused_plan(const mods::ModList& list, const mods::Usage& usage, int days, std::int64_t now,
-                               const Dependencies& dependencies);
+                               const Dependencies& dependencies, const Names& watched, const Names& keep = {});
 
 // The enabled mods heaviest first (mod_cost.h video_bytes) switched off until what stays can take
-// `budget` bytes of video memory or less. A mod not measured yet stays (it is not known to be
-// heavy), as does one a mod that stays needs, and a mod with no video memory to give back.
-// `costs` are taken as they are: the caller leaves out the ones measured for other files.
-[[nodiscard]] Plan light_plan(const mods::ModList& list, const mods::Costs& costs, std::uint64_t budget,
-                              const Dependencies& dependencies);
+// `budget` bytes of video memory or less at once (mod_cost.h peak_video: `maps` are the mods that
+// bring maps, and only one map loads at a time). A mod not measured yet stays (it is not known to be
+// heavy), as do the mods the player keeps, one a mod that stays needs, and a mod with no video
+// memory to give back. `costs` are taken as they are: the caller leaves out the ones measured for
+// other files.
+[[nodiscard]] Plan light_plan(const mods::ModList& list, const mods::Costs& costs, const Names& maps, std::uint64_t budget,
+                              const Dependencies& dependencies, const Names& keep = {});
 
 // What mods.json holds once `plan` is made: every entry in its place, those it names switched off.
 [[nodiscard]] std::vector<mods::ModEntry> switched_off(const mods::ModList& list, const Plan& plan);

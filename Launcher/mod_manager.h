@@ -65,6 +65,10 @@ void record_brought_in(const std::filesystem::path& mods_root, const std::string
 // Drops the lists of mods that are gone; nothing when there were none.
 void forget_brought_in(const std::filesystem::path& mods_root, const std::vector<std::string>& removed);
 
+// The mod folders a mod's manifest.json lists as dependencies ("Namespace-Name-1.2.3" is the folder
+// Namespace-Name), folded to lower case. Empty when it lists none or cannot be read.
+std::vector<std::string> listed_dependencies(const std::filesystem::path& folder);
+
 // The installed mods a pack brought in that nothing else needs, to offer with its uninstall: what
 // the mods in `removing` brought in (brought_in), without the ones `removing` already has and without
 // any that a mod staying installed (the rest of `installed`) lists as a dependency in its

@@ -56,27 +56,50 @@ int main() try {
         usage["Off-Already"].first_seen = now - 200 * day;
         usage["New-Deck"].first_seen = now - 3 * day;            // just installed
         // "Plugin": never seen
+        const cleanup::Names all{"Big-Map", "Old-Hat", "Core-Library", "Uses-Library", "Off-Already", "New-Deck", "Plugin"};
 
-        auto plan = cleanup::unused_plan(list, usage, 30, now, {});
+        auto plan = cleanup::unused_plan(list, usage, 30, now, {}, all);
         check(plan.switch_off == Names{"Old-Hat", "Core-Library", "Uses-Library"},
             "unused for 30 days: enabled ones only, in load order");
         check(plan.kept.empty(), "nothing needs them");
 
         // A mod that stays needs the library: it stays, and says why.
-        plan = cleanup::unused_plan(list, usage, 30, now, {{"big-map", {"CORE-library"}}});
+        plan = cleanup::unused_plan(list, usage, 30, now, {{"big-map", {"CORE-library"}}}, all);
         check(plan.switch_off == Names{"Old-Hat", "Uses-Library"}, "a mod a staying one needs is kept, ignoring case");
         check(plan.kept.size() == 1 && plan.kept.at("Core-Library") == "needed by Big-Map", "and the plan says why");
 
         // A mod that goes does not keep what it needs.
-        plan = cleanup::unused_plan(list, usage, 30, now, {{"Uses-Library", {"Core-Library"}}});
+        plan = cleanup::unused_plan(list, usage, 30, now, {{"Uses-Library", {"Core-Library"}}}, all);
         check(plan.switch_off == Names{"Old-Hat", "Core-Library", "Uses-Library"}, "both go when the one needing it goes too");
 
         // Needs in a chain: what a kept mod needs is kept too.
-        plan = cleanup::unused_plan(list, usage, 30, now, {{"Big-Map", {"Uses-Library"}}, {"Uses-Library", {"Core-Library"}}});
+        plan = cleanup::unused_plan(list, usage, 30, now, {{"Big-Map", {"Uses-Library"}}, {"Uses-Library", {"Core-Library"}}}, all);
         check(plan.switch_off == Names{"Old-Hat"}, "a kept mod keeps what it needs");
         check(plan.kept.at("Core-Library") == "needed by Uses-Library", "the chain is named link by link");
 
-        check(cleanup::unused_plan(list, usage, 365, now, {}).empty(), "nothing is unused for a year");
+        check(cleanup::unused_plan(list, usage, 365, now, {}, all).empty(), "nothing is unused for a year");
+
+        // A mod whose use cannot be seen stays, and keeps what it needs.
+        plan = cleanup::unused_plan(list, usage, 30, now, {{"Uses-Library", {"Core-Library"}}}, {"Big-Map", "Old-Hat", "Core-Library"});
+        check(plan.switch_off == Names{"Old-Hat"}, "only mods whose use can be seen go");
+        check(plan.kept.at("Uses-Library") == "its use cannot be seen" && plan.kept.at("Core-Library") == "needed by Uses-Library",
+            "and one that stays for it keeps what it needs");
+    }
+
+    // Which mods' use the game can see.
+    {
+        Mod map, plugin, hat, data, songs, objects_and_hat;
+        map.provides_levels = true;
+        plugin.provides_plugin = true;
+        ModCost items;
+        items.items = 4;
+        songs.provides_music = true;
+        objects_and_hat.provides_objects = true;
+        check(cleanup::watched_mod(map, nullptr) && cleanup::watched_mod(plugin, nullptr), "maps and plugins are seen used");
+        check(cleanup::watched_mod(hat, &items) && !cleanup::watched_mod(hat, nullptr), "items once measured");
+        const ModCost nothing;
+        check(!cleanup::watched_mod(data, &nothing), "a mod that only changes the game's data is not");
+        check(!cleanup::watched_mod(songs, nullptr) && !cleanup::watched_mod(objects_and_hat, &items), "nor one with songs or objects");
     }
 
     // Light: the heaviest go until the rest fit.
@@ -90,22 +113,50 @@ int main() try {
         costs["Plugin"] = video(0);
         // "New-Deck" not measured
 
-        auto plan = cleanup::light_plan(list, costs, 1000ull << 20, {});
+        auto plan = cleanup::light_plan(list, costs, {}, 1000ull << 20, {});
         check(plan.switch_off == Names{"Big-Map"}, "3800 MB down to 800 MB: only the map goes");
         check(plan.kept.size() == 1 && plan.kept.at("New-Deck") == "not measured yet", "a mod not measured stays");
 
-        plan = cleanup::light_plan(list, costs, 500ull << 20, {});
+        plan = cleanup::light_plan(list, costs, {}, 500ull << 20, {});
         check(plan.switch_off == Names{"Big-Map", "Uses-Library"},
             "of two as heavy, the one lower in the load order goes first; the list is in load order");
 
-        plan = cleanup::light_plan(list, costs, 0, {});
+        plan = cleanup::light_plan(list, costs, {}, 0, {});
         check(plan.switch_off == Names{"Big-Map", "Old-Hat", "Uses-Library"}, "a budget of 0: every mod with video memory to give back");
 
-        plan = cleanup::light_plan(list, costs, 8000ull << 20, {});
+        plan = cleanup::light_plan(list, costs, {}, 8000ull << 20, {});
         check(plan.empty(), "everything fits: nothing goes");
 
-        plan = cleanup::light_plan(list, costs, 1000ull << 20, {{"Plugin", {"Big-Map"}}});
+        plan = cleanup::light_plan(list, costs, {}, 1000ull << 20, {{"Plugin", {"Big-Map"}}});
         check(plan.empty() && plan.kept.at("Big-Map") == "needed by Plugin", "a heavy mod another needs stays");
+    }
+
+    // Light with maps: only one map is loaded at a time, so only the heaviest map left counts.
+    {
+        const auto maps_list = list_of({{"Map-A", true}, {"Map-B", true}, {"Hat", true}});
+        Costs costs;
+        costs["Map-A"] = video(3000);
+        costs["Map-B"] = video(2000);
+        costs["Hat"] = video(400);
+        const cleanup::Names maps{"Map-A", "Map-B"};
+        auto plan = cleanup::light_plan(maps_list, costs, maps, 2500ull << 20, {});
+        check(plan.switch_off == Names{"Map-A"}, "3400 MB at once, not 5400: the heaviest map going is enough");
+        plan = cleanup::light_plan(maps_list, costs, maps, 1000ull << 20, {});
+        check(plan.switch_off == Names{"Map-A", "Map-B"}, "then the next map, which is the heaviest left");
+        check(cleanup::light_plan(maps_list, costs, maps, 3400ull << 20, {}).empty(), "the sum of the maps is never the budget's measure");
+
+        // A map the player keeps stays; a lighter map gives nothing back then, so it stays too.
+        plan = cleanup::light_plan(maps_list, costs, maps, 2500ull << 20, {}, {"Map-A"});
+        check(plan.switch_off == Names{"Hat"}, "with the heaviest map kept, only what loads everywhere can go");
+        check(plan.kept.at("Map-A") == "you keep it", "and the plan says why the map stays");
+    }
+
+    // The player keeps a mod that is unused.
+    {
+        Usage usage;
+        usage["Old-Hat"] = {now - 200 * day, {{UseKind::item, {now - 90 * day, 3}}}};
+        const auto plan = cleanup::unused_plan(list, usage, 30, now, {}, {"Old-Hat"}, {"Old-Hat"});
+        check(plan.empty() && plan.kept.at("Old-Hat") == "you keep it", "a mod the player keeps never goes");
     }
 
     // mods.json once a plan is made.

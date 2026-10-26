@@ -15,6 +15,7 @@
 
 #include <cctype>
 #include <chrono>
+#include <ctime>
 #include <format>
 #include <fstream>
 #include <memory>
@@ -149,6 +150,19 @@ void pump_cost_check(ModsPanel& panel) {
     } catch (const std::system_error&) {
         check.running = false;
     }
+}
+
+// What the game noted of each mod's use, and what each mod needs, read with the folder.
+void read_records(ModsPanel& panel) {
+    panel.usage = mods::read_usage(panel.root / mods::usage_file);
+    panel.dependencies.clear();
+    for (const auto& entry : panel.list.entries)
+        if (auto listed = launcher_mods::listed_dependencies(entry.mod.directory); !listed.empty())
+            panel.dependencies.emplace(entry.mod.name, std::move(listed));
+}
+
+std::int64_t now_seconds() {
+    return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
 void save(ModsPanel& panel) {
@@ -501,6 +515,32 @@ std::uint64_t video(const ModsPanel& panel, const std::string& name) {
 mods::Weight video_weight(const ModsPanel& panel, const std::string& name) {
     const auto found = panel.costs.costs.find(name);
     return found == panel.costs.costs.end() ? mods::Weight::light : mods::weight(found->second, panel.costs.card_memory);
+}
+
+// The mods that bring maps, by folder name: only one of them is loaded at a time.
+launcher_cleanup::Names map_mods(const ModsPanel& panel) {
+    launcher_cleanup::Names maps;
+    for (const auto& entry : panel.list.entries)
+        if (!entry.mod.levels.empty()) maps.insert(entry.mod.name);
+    return maps;
+}
+
+// Whether the game can see the mod used (launcher_cleanup::watched_mod).
+bool watched(const ModsPanel& panel, const mods::Mod& mod) {
+    const auto found = panel.costs.costs.find(mod.name);
+    return launcher_cleanup::watched_mod(mod, found == panel.costs.costs.end() ? nullptr : &found->second);
+}
+
+// When the game last saw the mod used, for its row: "Last used in game 3 days ago."; empty when
+// the game has not seen the mod enabled yet.
+std::string use_text(const ModsPanel& panel, const mods::Mod& mod) {
+    if (!watched(panel, mod)) return "Its use in game is not tracked: it changes the game's data, or brings songs or objects.";
+    const auto found = panel.usage.find(mod.name);
+    const auto days = mods::idle_days(panel.usage, mod.name, now_seconds());
+    if (found == panel.usage.end() || !days) return {};
+    const auto when = *days <= 0 ? std::string("today") : *days == 1 ? std::string("yesterday") : std::format("{} days ago", *days);
+    return mods::last_used(found->second) ? "Last used in game " + when + "."
+                                          : "Not used in game since ReSkate first saw it, " + when + ".";
 }
 
 std::vector<int> visible_mods(const ModsPanel& panel, const thunderstore::Installed& installed, const thunderstore::CategoryFilter& categories) {
@@ -884,10 +924,14 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
             ImGui::IsMouseHoveringRect(ImVec2(start.x + r.vram, start.y), ImVec2(start.x + r.type, start.y + tall))) {
             if (!known) ImGui::SetTooltip(panel.costs.running ? "Being measured" : "Not measured yet");
             else
+            {
+                const auto use = use_text(panel, mod);
                 ImGui::SetTooltip("%s", ("Up to " + mods::describe_cost(found->second) + "." +
                     (mod.levels.empty() ? std::string() : " A map: loaded only while you are on it.") +
                     (weight == mods::Weight::light ? std::string()
-                        : std::string(" ") + (weight == mods::Weight::heavy ? "Heavy" : "Medium") + " for this card.")).c_str());
+                        : std::string(" ") + (weight == mods::Weight::heavy ? "Heavy" : "Medium") + " for this card.") +
+                    (use.empty() ? std::string() : "\n" + use)).c_str());
+            }
         }
     }
 
@@ -1231,6 +1275,268 @@ void resolve_popup(const Fonts& fonts, ModsPanel& panel, Request& request) {
     ImGui::EndPopup();
 }
 
+// The card's memory for the budget and the warnings: what DXGI says, else the 8 GB the 2.1.0 notes
+// found short (mod_cost.h weight).
+std::uint64_t card_or_default(const ModsPanel& panel) {
+    return panel.costs.card_memory ? panel.costs.card_memory : 8ull << 30;
+}
+
+// The enabled mods can take more video memory at once than the card has: say so above the list,
+// with the way to lighten them. Only when the card is known.
+void video_memory_bar(const Fonts& fonts, ModsPanel& panel) {
+    const auto memory = panel.costs.card_memory;
+    const auto peak = enabled_peak(panel);
+    if (!memory || peak.at_once() <= memory) return;
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(rgba(255, 190, 60, 0.07f)));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImGui::ColorConvertU32ToFloat4(rgba(255, 190, 60, 0.35f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, S(6));
+    ImGui::BeginChild("##video_memory", ImVec2(0, 0),
+        ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_NavFlattened);
+    const float button = S(190);
+    const float top = ImGui::GetCursorPosY();
+    ImGui::PushTextWrapPos(ImGui::GetContentRegionMax().x - button - S(16));
+    ImGui::PushFont(fonts.bold);
+    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::warning), "%s",
+        ("UP TO " + mods::byte_text(peak.at_once()) + " OF VIDEO MEMORY, ON A " + mods::byte_text(memory) + " CARD").c_str());
+    ImGui::PopFont();
+    const auto where = peak.map.empty() ? std::string() : " on " + title_of(panel, peak.map);
+    ImGui::TextDisabled("%s", ("With everything your mods bring loaded at once" + where +
+        ", the game may run short: blurry textures, stutters, or a crash. It is an upper bound: the game streams "
+        "many textures and loads an item only while it is worn. Switching off the heaviest mods makes room.").c_str());
+    ImGui::PopTextWrapPos();
+    const float bottom = ImGui::GetCursorPosY();
+    ImGui::SetCursorPos(ImVec2(ImGui::GetContentRegionMax().x - button, top + (bottom - top - S(34)) * 0.5f));
+    push_primary_button();
+    if (ImGui::Button("LIGHTEN", ImVec2(button, S(34)))) {
+        panel.cleaning = true;
+        panel.clean_light = true;
+    }
+    pop_primary_button();
+    ImGui::SetCursorPosY(std::max(bottom, top + S(34)));
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(2);
+}
+
+// "2026-10-26 14h05", local time: when a snapshot was taken, in its name.
+std::string when_now() {
+    const auto now = std::time(nullptr);
+    std::tm local{};
+    localtime_s(&local, &now);
+    return std::format("{:04}-{:02}-{:02} {:02}h{:02}", local.tm_year + 1900, local.tm_mon + 1, local.tm_mday, local.tm_hour,
+                       local.tm_min);
+}
+
+void load_profiles(ModsPanel& panel) {
+    if (panel.profiles_loaded || panel.root.empty()) return;
+    panel.profiles = launcher_profiles::load(panel.root);
+    panel.profiles_loaded = true;
+}
+
+// Saves the mods as they are as a snapshot profile, then switches off what `plan` names: one change
+// of mods.json. Nothing changes when the snapshot cannot be saved, since nothing could take it back.
+void switch_off_plan(ModsPanel& panel, const launcher_cleanup::Plan& plan) {
+    load_profiles(panel);
+    auto profiles = panel.profiles;
+    std::string name;
+    if (!launcher_cleanup::add_snapshot(profiles, panel.list, when_now(), name)) {
+        panel.message = std::format("Nothing was switched off: {} profiles are saved, the most there can be, so your mods as they are "
+                                    "could not be saved first. Delete a profile, then try again.", launcher_profiles::max_profiles);
+        panel.message_error = true;
+        return;
+    }
+    try {
+        launcher_profiles::save(panel.root, profiles);
+    } catch (const std::exception& failure) {
+        panel.message = std::string("Nothing was switched off: ") + failure.what();
+        panel.message_error = true;
+        return;
+    }
+    panel.profiles = std::move(profiles);
+    panel.list.entries = launcher_cleanup::switched_off(panel.list, plan);
+    save(panel);
+    if (panel.message_error) return;
+    const auto count = plan.switch_off.size();
+    panel.message = std::format("Switched off {} {}. To put everything back, load the profile \"{}\" in PROFILES. "
+                                "Changes apply the next time Skate starts.", count, count == 1 ? "mod" : "mods", name);
+    logging::write(logging::Level::info, logging::Channel::launcher,
+        std::format("Clean up: switched off {} mod(s), snapshot \"{}\"", count, name));
+}
+
+// A new profile with `plan` made, beside the others; the mods in use are left as they are.
+void save_light_profile(ModsPanel& panel, const launcher_cleanup::Plan& plan) {
+    load_profiles(panel);
+    if (panel.profiles.list.size() >= launcher_profiles::max_profiles) {
+        panel.message = std::format("{} profiles are saved, the most there can be. Delete one, then try again.", launcher_profiles::max_profiles);
+        panel.message_error = true;
+        return;
+    }
+    auto profiles = panel.profiles;
+    const auto base = profiles.active.empty() ? std::string("My mods") : profiles.active;
+    profiles.list.push_back(launcher_cleanup::light_profile(profiles, panel.list, plan, base));
+    const auto name = profiles.list.back().name;
+    try {
+        launcher_profiles::save(panel.root, profiles);
+    } catch (const std::exception& failure) {
+        panel.message = failure.what();
+        panel.message_error = true;
+        return;
+    }
+    panel.profiles = std::move(profiles);
+    panel.message = "Saved the profile \"" + name + "\": load it in PROFILES to play with it. Your mods are as they were.";
+    panel.message_error = false;
+}
+
+// The CLEAN UP popup: the mods a plan would switch off, each with a box to keep it, what stays for
+// another mod, and the buttons that make it. UNUSED: not used in game for some days. LIGHTER: the
+// heaviest, until the rest fit a budget of video memory.
+void cleanup_popup(const Fonts& fonts, ModsPanel& panel) {
+    if (panel.cleaning) {
+        panel.cleaning = false;
+        panel.clean_keep.clear();
+        panel.usage = mods::read_usage(panel.root / mods::usage_file);   // the game may have run since
+        if (panel.clean_budget_gb <= 0)
+            panel.clean_budget_gb = static_cast<float>(static_cast<double>(card_or_default(panel)) * 0.9 / (1ull << 30));
+        ImGui::OpenPopup("##clean_up");
+    }
+    const auto* viewport = ImGui::GetMainViewport();
+    const ImVec2 extent(std::min(S(860), viewport->Size.x - S(80)), std::min(S(680), viewport->Size.y - S(60)));
+    ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x + (viewport->Size.x - extent.x) * 0.5f,
+                                   viewport->Pos.y + (viewport->Size.y - extent.y) * 0.5f));
+    ImGui::SetNextWindowSize(extent);
+    if (!ImGui::BeginPopupModal("##clean_up", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings))
+        return;
+
+    ImGui::PushFont(fonts.heading);
+    ImGui::TextUnformatted("CLEAN UP");
+    ImGui::PopFont();
+    ImGui::SameLine(0, S(24));
+    for (const bool light : {false, true}) {
+        const bool on = panel.clean_light == light;
+        if (on) push_primary_button();
+        if (ImGui::Button(light ? "LIGHTER" : "UNUSED", ImVec2(S(120), 0)) && !on) {
+            panel.clean_light = light;
+            panel.clean_keep.clear();
+        }
+        if (on) pop_primary_button();
+        ImGui::SameLine(0, S(8));
+    }
+    ImGui::NewLine();
+
+    // The plan as it stands, for the page shown.
+    const auto costs_known = panel.costs.ready;
+    launcher_cleanup::Names watching;
+    for (const auto& entry : panel.list.entries)
+        if (watched(panel, entry.mod)) watching.insert(entry.mod.name);
+    const auto maps = map_mods(panel);
+    const auto budget = static_cast<std::uint64_t>(static_cast<double>(std::max(0.5f, panel.clean_budget_gb)) * (1ull << 30));
+    const auto plan = panel.clean_light
+        ? launcher_cleanup::light_plan(panel.list, panel.costs.costs, maps, budget, panel.dependencies, panel.clean_keep)
+        : launcher_cleanup::unused_plan(panel.list, panel.usage, panel.clean_days, now_seconds(), panel.dependencies, watching,
+                                        panel.clean_keep);
+
+    ImGui::PushTextWrapPos(0);
+    if (panel.clean_light) {
+        const auto peak = enabled_peak(panel);
+        ImGui::TextDisabled("%s", ("Your enabled mods can take up to " + mods::byte_text(peak.at_once()) +
+            " of video memory at once (one map at a time), on a card with " +
+            (panel.costs.card_memory ? mods::byte_text(panel.costs.card_memory) : std::string("memory not known")) +
+            ". The heaviest go first until the rest fit the budget. Untick one to keep it.").c_str());
+        ImGui::SetNextItemWidth(S(260));
+        ImGui::SliderFloat("Budget##clean_budget", &panel.clean_budget_gb, 0.5f, 32.0f, "%.1f GB");
+        if (!costs_known) ImGui::TextDisabled("%s", panel.costs.running ? "Measuring your mods..." : "Your mods are not measured yet.");
+    } else {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("Mods you have not used in game for");
+        ImGui::SameLine();
+        static constexpr int day_choices[] = {7, 14, 30, 60, 90};
+        ImGui::SetNextItemWidth(S(110));
+        if (ImGui::BeginCombo("##clean_days", std::format("{} days", panel.clean_days).c_str())) {
+            for (const int days : day_choices)
+                if (ImGui::Selectable(std::format("{} days", days).c_str(), panel.clean_days == days)) panel.clean_days = days;
+            ImGui::EndCombo();
+        }
+        ImGui::TextDisabled("The game notes the maps you load, the items you wear and the plugins you use, on this PC only. "
+                            "A mod is only offered once it has been watched that long. Untick one to keep it.");
+    }
+    ImGui::PopTextWrapPos();
+    ImGui::Spacing();
+
+    const float footer = ImGui::GetFrameHeight() * 2 + S(40);
+    ImGui::BeginChild("##clean_list", ImVec2(0, ImGui::GetContentRegionAvail().y - footer), ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened);
+    const auto mod_row = [&](const std::string& name, bool going, const std::string& note) {
+        ImGui::PushID(name.c_str());
+        bool tick = going;
+        if (ImGui::Checkbox("##go", &tick)) {
+            if (tick) panel.clean_keep.erase(name);
+            else panel.clean_keep.insert(name);
+        }
+        ImGui::SameLine();
+        ImGui::PushFont(fonts.bold);
+        ImGui::TextUnformatted(title_of(panel, name).c_str());
+        ImGui::PopFont();
+        ImGui::SameLine(0, S(14));
+        ImGui::TextDisabled("%s", note.c_str());
+        ImGui::PopID();
+    };
+    const auto mod_of = [&](const std::string& name) -> const mods::Mod* {
+        const auto found = std::ranges::find(panel.list.entries, name, [](const mods::ModEntry& e) -> const std::string& { return e.mod.name; });
+        return found == panel.list.entries.end() ? nullptr : &found->mod;
+    };
+    const auto note_for = [&](const std::string& name) {
+        if (panel.clean_light) {
+            const auto found = panel.costs.costs.find(name);
+            if (found == panel.costs.costs.end()) return std::string();
+            return mods::byte_text(mods::video_bytes(found->second)) + (maps.contains(name) ? "  (a map: only while you are on it)" : "");
+        }
+        const auto* mod = mod_of(name);
+        return mod ? use_text(panel, *mod) : std::string();
+    };
+    if (plan.switch_off.empty() && std::ranges::none_of(plan.kept, [](const auto& k) { return k.second == "you keep it"; }))
+        ImGui::TextDisabled("%s", panel.clean_light ? "Your enabled mods already fit this budget."
+                                                    : "Nothing to switch off: every mod the game watches was used lately.");
+    for (const auto& name : plan.switch_off) mod_row(name, true, note_for(name));
+    std::size_t unseen{};
+    for (const auto& [name, why] : plan.kept) {
+        if (why == "you keep it") mod_row(name, false, note_for(name));
+        else if (why == "its use cannot be seen") ++unseen;
+    }
+    for (const auto& [name, why] : plan.kept)
+        if (why.starts_with("needed by ")) ImGui::TextDisabled("%s", (title_of(panel, name) + " stays: " + why + ".").c_str());
+    if (unseen)
+        ImGui::TextDisabled("%s", std::format("{} unused {} stay on: the game cannot see whether they are used (game data, songs or objects).",
+                                              unseen, unseen == 1 ? "mod" : "mods").c_str());
+    ImGui::EndChild();
+
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextDisabled("Before anything is switched off, your mods as they are now are saved as a profile named "
+                        "\"Before cleanup\" and the time; load it in PROFILES to put everything back.");
+    ImGui::PopTextWrapPos();
+    ImGui::SetCursorPosY(ImGui::GetWindowHeight() - S(16) - ImGui::GetFrameHeight());
+    const auto count = plan.switch_off.size();
+    ImGui::BeginDisabled(!count || panel.installing);
+    push_primary_button();
+    if (ImGui::Button(std::format("SWITCH OFF {} {}", count, count == 1 ? "MOD" : "MODS").c_str(), ImVec2(S(220), 0))) {
+        switch_off_plan(panel, plan);
+        ImGui::CloseCurrentPopup();
+    }
+    pop_primary_button();
+    if (panel.clean_light) {
+        ImGui::SameLine(0, S(10));
+        if (ImGui::Button("SAVE AS A PROFILE", ImVec2(S(200), 0))) {
+            save_light_profile(panel, plan);
+            ImGui::CloseCurrentPopup();
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("A new profile with these mods off, beside your others. Your mods stay as they are until you load it.");
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::SetCursorPosX(ImGui::GetWindowWidth() - S(24) - S(120));
+    if (ImGui::Button("CLOSE", ImVec2(S(120), 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
 void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, const thunderstore::Installed& installed,
                     const std::vector<const thunderstore::Package*>& pending, float height, bool installing) {
     auto& entries = panel.list.entries;
@@ -1253,18 +1559,8 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
         auto caption = std::format("{} {}  /  {} on", entries.size(), entries.size() == 1 ? "mod" : "mods", enabled);
         if (bytes) caption += "  /  " + size_text(bytes);
         // What the enabled mods can take of video memory at once: a map only while on it.
-        if (panel.costs.ready) {
-            mods::Costs on;
-            std::set<std::string, std::less<>> maps;
-            for (const auto& entry : entries) {
-                if (!entry.enabled) continue;
-                if (!entry.mod.levels.empty()) maps.insert(entry.mod.name);
-                if (const auto found = panel.costs.costs.find(entry.mod.name); found != panel.costs.costs.end())
-                    on.emplace(found->first, found->second);
-            }
-            if (const auto peak = mods::peak_video(on, maps); peak.at_once())
-                caption += "  /  up to " + mods::byte_text(peak.at_once()) + " video memory at once";
-        }
+        if (const auto peak = enabled_peak(panel); peak.at_once())
+            caption += "  /  up to " + mods::byte_text(peak.at_once()) + " video memory at once";
         page_banner(fonts, "MY MODS", nullptr,
             "Your installed mods. They load top to bottom: where two change the same thing, the higher one wins. "
             "Drag a mod by its handle to move it. Changes apply the next time Skate starts.",
@@ -1277,8 +1573,8 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
     }
 
     // ------------------------------------------------ search, filter, order, check, refresh
-    const float combo = S(150), check = S(160), refresh = S(96), gap = S(10);
-    ImGui::SetNextItemWidth(std::max(S(140), ImGui::GetContentRegionAvail().x - (combo + gap) * 3 - check - gap - refresh - gap));
+    const float combo = S(150), check = S(160), clean = S(110), refresh = S(96), gap = S(10);
+    ImGui::SetNextItemWidth(std::max(S(140), ImGui::GetContentRegionAvail().x - (combo + gap) * 3 - check - gap - clean - gap - refresh - gap));
     // Ctrl+F jumps to the search, as it does in a browser.
     if (!installing && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false) &&
         !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId))
@@ -1317,6 +1613,16 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
                               "The list checks itself after every change too.");
     }
     ImGui::SameLine(0, gap);
+    ImGui::BeginDisabled(installing);
+    if (ImGui::Button("Clean up", ImVec2(clean, 0))) {
+        panel.cleaning = true;
+        panel.clean_light = false;
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Switch off the mods you no longer use, or the heaviest ones, in one go. "
+                          "Your mods as they were are saved as a profile first.");
+    ImGui::SameLine(0, gap);
     if (ImGui::Button("Refresh", ImVec2(refresh, 0))) refresh_mods(launcher, panel);
 
     const auto view = visible_mods(panel, installed, {launcher.settings().installed_categories_only, launcher.settings().installed_categories_hidden});
@@ -1331,6 +1637,7 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
     // ------------------------------------------------ the conflicts, and the way to settle them
     ImGui::Spacing();
     conflicts_bar(fonts, panel);
+    video_memory_bar(fonts, panel);
 
     // ------------------------------------------------ the updates waiting on Thunderstore
     if (!pending.empty()) {
@@ -1542,6 +1849,7 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
             request = {Request::Kind::uninstall, std::vector<std::string>(panel.marked.begin(), panel.marked.end())};
     }
     resolve_popup(fonts, panel, request);
+    cleanup_popup(fonts, panel);
     if (request.kind != Request::Kind::none) carry_out(panel, installed, request);
 }
 
@@ -1779,12 +2087,23 @@ void wait_for_conflict_check(ModsPanel& panel) {
     for (int waited = 0; (panel.conflicts.running || panel.costs.running) && waited < 500; ++waited) Sleep(20);
 }
 
+mods::Peak enabled_peak(const ModsPanel& panel) {
+    if (!panel.costs.ready) return {};
+    mods::Costs on;
+    for (const auto& entry : panel.list.entries)
+        if (entry.enabled)
+            if (const auto found = panel.costs.costs.find(entry.mod.name); found != panel.costs.costs.end())
+                on.emplace(found->first, found->second);
+    return mods::peak_video(on, map_mods(panel));
+}
+
 void prepare_mods(ModsPanel& panel, const launcher_app::Session& session) {
     if (panel.root.empty()) {
         panel.root = launcher_mods::mods_root(session.paths.directory);
         panel.list = mods::scan_mods(panel.root.parent_path());
         want_conflict_check(panel, 0);
         read_conflict_choices(panel);
+        read_records(panel);
         panel.costs.due = true;
     }
     pump_conflict_check(panel);
@@ -1802,6 +2121,7 @@ void scan(ModsPanel& panel, const launcher_app::Session& session) {
     panel.list = mods::scan_mods(panel.root.parent_path());
     want_conflict_check(panel, 0);
     read_conflict_choices(panel);
+    read_records(panel);
     panel.costs.due = true;
     panel.sizes.clear();
     for (const auto& entry : panel.list.entries) panel.sizes[entry.mod.name] = folder_size(entry.mod.directory);

@@ -450,8 +450,6 @@ std::string install(const fs::path& mods, const fs::path& source, bool replace,
     }
 }
 
-namespace {
-// The mod folders `folder`'s manifest.json lists as dependencies, folded to lower case.
 std::vector<std::string> listed_dependencies(const fs::path& folder) {
     std::vector<std::string> result;
     try {
@@ -479,6 +477,7 @@ std::vector<std::string> listed_dependencies(const fs::path& folder) {
     return result;
 }
 
+namespace {
 Json read_brought_in(const fs::path& mods) {
     try {
         std::ifstream input(mods / brought_in_file, std::ios::binary);
