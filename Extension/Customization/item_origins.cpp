@@ -56,6 +56,7 @@ void refresh(Table& t) {
         origin->author = source.author;
         origin->version = source.version;
         origin->name = mods::item_source_name(source);
+        origin->mod = source.mod;
         origin->icon = mods_root / utf8_path(source.folder) / L"icon.png";
         // A file from before the version and folder were recorded: the mod as the launch read it.
         if (source.folder.empty() || source.version.empty()) {

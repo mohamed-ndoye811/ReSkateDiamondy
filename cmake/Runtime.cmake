@@ -124,6 +124,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Assets/native_patch_support.cpp
     Extension/Assets/mod_layers.cpp
     Extension/Assets/live_mods.cpp
+    Extension/Assets/mod_usage_tracker.cpp
     Extension/Assets/map_download.cpp
     Extension/Assets/map_icons.cpp
     Engine/Vfs/thunderstore_package.cpp

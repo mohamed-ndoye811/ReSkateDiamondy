@@ -734,6 +734,8 @@ struct TestEnvironment final : Environment {
     std::vector<plugin_ui::Panel> panels;
     std::vector<plugin_ui::Action> actions;
     bool panels_open{};
+    std::vector<std::string> used;
+    void plugin_used(std::string_view plugin) override { used.emplace_back(plugin); }
     void toast(std::string_view plugin, LogLevel, std::string_view text) override { toasts.push_back(std::string(plugin) + ": " + std::string(text)); }
     bool ui_sound(std::string_view name) override {
         if (name != "select" && name != "cancel" && name != "navigate" && name != "toggle" && name != "tab") return false;
@@ -882,8 +884,10 @@ void a_plugin_loads_ticks_runs_its_commands_and_unloads() {
     check(environment.logged("[hello] loaded hello api 1"), "The load handler ran\n" + environment.all());
     check(environment.logged("[hello] printed\t1\ttrue"), "print goes to the log");
     ticks(host, environment, 3);
+    environment.used.clear();
     check(host.run_console("hello there a b"), "Its command runs");
     check(environment.printed("hello a,b after 3"), "with its arguments, after its ticks");
+    check(environment.used == std::vector<std::string>{"hello"}, "A command run is a use of the plugin's mod");
     check(host.run_console("HELLO There"), "whatever the case");
     check(!host.run_console("nothing here"), "and other text is left to ReSkate");
     check(status_of(host, "hello").commands.size() == 4, "Its commands are listed, with the subcommands one declared");
@@ -1815,6 +1819,9 @@ void plugins_draw_on_the_overlay() {
     check(environment.layers.size() == 1 && environment.layers[0].plugin == "painter" && environment.layers[0].shapes.size() == 8,
           "Its shapes are handed to the overlay each tick\n" + environment.all());
     check(environment.logged("drawn"), "and the draw handler ran to its end\n" + environment.all());
+    check(std::count(environment.used.begin(), environment.used.end(), "painter") == 1, "What it draws is a use of its mod");
+    ticks(host, environment, 10);
+    check(std::count(environment.used.begin(), environment.used.end(), "painter") == 1, "once a minute, not every frame");
     const auto& first = environment.layers[0].shapes[0];
     check(first.kind == plugin_ui::Shape::Kind::text && first.text == "hello" && first.style.colour == 0xff0080ff &&
           first.style.size == 24 && first.style.align == 1, "with their style (colours as ImGui keeps them)");

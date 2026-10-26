@@ -434,15 +434,23 @@ bool Host::send(std::uint32_t channel, std::uint64_t to, std::string_view payloa
 
 void Host::draw_and_build() {
     std::vector<plugin_ui::Layer> layers;
+    // What a plugin draws, or its page open, counts as a use once a minute, not every frame.
+    const bool note_drawn = environment_.now_ms() >= next_drawn_use_;
+    if (note_drawn) next_drawn_use_ = environment_.now_ms() + 60'000;
     for (auto& [id, entry] : entries_) {
         if (!entry.plugin) continue;
         entry.plugin->draw();
         collect(entry);
         if (entry.plugin) {
             auto shapes = entry.plugin->take_shapes();
-            if (!shapes.empty()) layers.push_back({id, std::move(shapes)});
+            if (!shapes.empty()) {
+                if (note_drawn) environment_.plugin_used(id);
+                layers.push_back({id, std::move(shapes)});
+            }
         }
     }
+    if (note_drawn && environment_.panels_shown())
+        if (const auto* page = find(environment_.shown_page())) environment_.plugin_used(page->candidate.id);
     environment_.publish_layers(std::move(layers));
     for (auto& action : environment_.take_actions()) {
         // Esc on a full-screen screen closes it at once; the plugin hears screen_closed.
@@ -453,6 +461,7 @@ void Host::draw_and_build() {
             }
             continue;
         }
+        if (const auto* acted = find(action.plugin)) environment_.plugin_used(acted->candidate.id);
         if (actions_.size() < 256) actions_.push_back(std::move(action));
     }
     // Pages and screens are built ten times a second: a plugin's page (and its panels) only while the
@@ -535,6 +544,7 @@ bool Host::run_console(std::string_view text) {
         if (!entry || !entry->plugin) return false;
         entry->plugin->run_command(name, {words.begin() + static_cast<std::ptrdiff_t>(count), words.end()});
         collect(*entry);
+        environment_.plugin_used(found->second);
         return true;
     }
     return false;

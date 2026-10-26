@@ -49,6 +49,7 @@
 #include "Extension/Skater/pad_flight.h"
 #include "Extension/Trainer/trainer.h"
 #include "Extension/World/level_loading.h"
+#include "Extension/Assets/mod_usage_tracker.h"
 #include "Extension/World/loading_screen.h"
 #include <Windows.h>
 #include <dxgi1_4.h>
@@ -1562,6 +1563,7 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
     } preserve_tick_error;
     dingosdk::camera_tick_native_return();
     dingosdk::poll_level_loading(client);
+    dingosdk::mod_usage_tracker::poll();
     try {
         TickState tick_state;
         {

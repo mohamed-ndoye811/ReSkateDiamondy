@@ -6,6 +6,7 @@
 #include "plugin_game_runtime.h"
 #include "plugin_wire.h"
 #include "Engine/Core/Log/logging.h"
+#include "Extension/Assets/mod_usage_tracker.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "Extension/Multiplayer/Session/session.h"
 #include "Extension/UI/NativeMenu/ui_sound.h"
@@ -154,6 +155,9 @@ public:
         if (!server_) plugin_ui::publish_layers(std::move(layers));
     }
     bool panels_shown() override { return !server_ && plugin_ui::panels_shown(); }
+    void plugin_used(std::string_view plugin) override {
+        if (!server_) mod_usage_tracker::note(plugin, dingosdk::mods::UseKind::plugin);
+    }
     std::string shown_page() override { return plugin_ui::shown_page(); }
     void publish_pages(std::vector<plugin_ui::PageEntry> pages) override {
         if (!server_) plugin_ui::publish_pages(std::move(pages));

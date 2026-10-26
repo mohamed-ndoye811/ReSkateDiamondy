@@ -11,6 +11,7 @@ namespace dingosdk::item_origins {
 struct Origin {
     std::string title, author, version;  // title with spaces for underscores
     std::string name;                    // "<title> by <author>"
+    std::string mod;                     // its folder name under Mods/ (a variant's: "<mod>#<variant>")
     std::filesystem::path icon;          // the mod's icon.png (it may not exist)
     std::size_t items{};                 // how many items the mod adds or changes
 };

@@ -61,6 +61,10 @@ public:
     // net.http, made off the client thread: false when it cannot start; answers come back later.
     virtual bool http_request(HttpRequest) { return false; }
     virtual std::vector<HttpResponse> take_http_responses() { return {}; }
+    // The player made use of this plugin: ran one of its commands, acted on its page or screen, had
+    // its page open, or saw what it draws. For the mod's last use (Engine/Vfs/mod_usage.h); a plugin
+    // that draws is told at most once a minute.
+    virtual void plugin_used(std::string_view /*plugin*/) {}
     // The wider set's game (plugin_game.h); none by default.
     virtual Game& game() {
         static Game none;
@@ -170,6 +174,7 @@ private:
     double next_save_{};
     SessionState session_;
     double next_panels_{};
+    double next_drawn_use_{}; // when what a plugin draws next counts as a use
     std::vector<plugin_ui::PageEntry> pages_; // as last published
     std::vector<plugin_ui::Action> actions_; // waiting for the next panel build
     struct Emitted {
